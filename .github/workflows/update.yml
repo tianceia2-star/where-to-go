@@ -1,0 +1,68 @@
+name: 每日更新活動資料
+
+on:
+  schedule:
+    # GitHub Actions 的 cron 一律是 UTC。台灣 00:17 = 前一天 UTC 16:17。
+    #
+    # 刻意避開整點：大家都把排程設在 :00，那個時段最壅塞，實測常延遲 5-20 分鐘。
+    # 挑 :17 這種奇數分鐘排隊的人少很多，實際觸發時間比較準。
+    - cron: "17 16 * * *"
+  workflow_dispatch:        # 也可以在 Actions 頁面手動觸發
+
+# 只留一個執行中的工作，避免手動觸發跟排程打架
+concurrency:
+  group: update-events
+  cancel-in-progress: false
+
+permissions:
+  contents: write           # 需要寫回 dist/events.json
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 保留昨天的產出，pipeline 才能在今天抓壞掉時沿用舊資料
+      - name: 準備快取目錄
+        run: mkdir -p cache dist
+
+      - name: 跑單元測試
+        run: |
+          python3 make_fixtures.py
+          python3 test_pipeline.py
+          rm -rf cache
+
+      - name: 抓取並產生 events.json
+        env:
+          TZ: Asia/Taipei
+        run: python3 pipeline.py
+
+      # 抓壞了就不要覆蓋。events.json 太小代表這次抓取有問題，
+      # 寧可維持昨天的資料，也不要讓整個網站空掉。
+      - name: 檢查產出是否合理
+        run: |
+          SIZE=$(stat -c%s dist/events.json)
+          COUNT=$(python3 -c "import json;print(json.load(open('dist/events.json'))['count'])")
+          echo "events.json ${SIZE} bytes, ${COUNT} 筆"
+          if [ "$COUNT" -lt 200 ]; then
+            echo "::error::只有 ${COUNT} 筆，明顯異常，中止以免覆蓋掉好資料"
+            exit 1
+          fi
+
+      - name: Commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/events.json
+          if git diff --staged --quiet; then
+            echo "資料沒有變動，不建立 commit"
+          else
+            git commit -m "資料更新 $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+            git push
+          fi
