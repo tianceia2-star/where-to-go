@@ -425,7 +425,33 @@ def main():
     if not 1300 < d < 1500:
         fails.append(f"haversine 台北車站→中正紀念堂 = {d:.0f}m，應約 1400m")
 
-    total = (len(PRICE_CASES) + len(GEO_CASES) + len(DATE_CASES)
+    # fetch_culture：回應殘缺時要重抓；重抓必須繞過快取（max_age=0）
+    def run_culture(responses):
+        calls = []
+        def fake(url, name, max_age=3600):
+            calls.append(max_age)
+            r = responses[len(calls) - 1]
+            if isinstance(r, Exception):
+                raise r
+            return [0] * r
+        orig_fetch, orig_sleep = p.fetch_json, p.time.sleep
+        p.fetch_json, p.time.sleep = fake, lambda _s: None
+        try:
+            return len(p.fetch_culture()), calls
+        finally:
+            p.fetch_json, p.time.sleep = orig_fetch, orig_sleep
+
+    got, calls = run_culture([110, 541])
+    if got != 541 or calls != [3600, 0]:
+        fails.append(f"fetch_culture 殘缺後重抓 -> {got} {calls} 期望 541 [3600, 0]")
+    got, _ = run_culture([110, 90, 120])
+    if got != 120:
+        fails.append(f"fetch_culture 三次都殘缺 -> {got} 期望回傳最多的 120")
+    got, _ = run_culture([OSError("boom"), 541])
+    if got != 541:
+        fails.append(f"fetch_culture 第一次連線失敗 -> {got} 期望 541")
+
+    total = (3 + len(PRICE_CASES) + len(GEO_CASES) + len(DATE_CASES)
              + len(MOCA_CASES) + len(CLAB_CASES) + len(s.VENUES) + len(URL_CASES) + len(HOME_CASES) + 4 + 5 + 2 + 4 + 3 + 9 + 2 + 3 + 1 + len(ONGOING_CASES) + len(GRACE) + len(IMG_CASES) + 3 + 1)
     if fails:
         print(f"✗ {len(fails)}/{total} 失敗:")

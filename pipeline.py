@@ -84,6 +84,33 @@ def fetch_json(url, cache_name, max_age=3600):
     return json.loads(raw)
 
 
+# 文化部 API 在 GitHub Actions 上偶爾回 200 但只給一小部分（約 100 筆，正常 500+），
+# 單次抓取會讓當天整個失敗。筆數偏少就等一下重抓，最多 3 次。
+CULTURE_MIN_EVENTS = 300
+
+
+def fetch_culture(tries=3, wait=20):
+    best, err = None, None
+    for i in range(tries):
+        try:
+            # 第一次可吃快取；重試一定要重新抓，否則會拿到同一份殘缺資料
+            events = fetch_json(CULTURE_API, "culture.json", max_age=3600 if i == 0 else 0)
+        except (OSError, ValueError) as e:
+            err = e
+            print(f"   ! 文化部抓取失敗（第 {i + 1}/{tries} 次）：{e}")
+        else:
+            if best is None or len(events) > len(best):
+                best = events
+            if len(events) >= CULTURE_MIN_EVENTS:
+                return events
+            print(f"   ! 只回 {len(events)} 筆（低於 {CULTURE_MIN_EVENTS}），第 {i + 1}/{tries} 次")
+        if i < tries - 1:
+            time.sleep(wait)
+    if best is None:
+        raise err
+    return best      # 仍偏少就照實回傳，交給 workflow 的 200 筆檢查把關
+
+
 # ---------------------------------------------------------------- 捷運
 def load_mrt():
     """388 個出入口 → 118 個站，每站取出入口平均座標。"""
@@ -595,7 +622,7 @@ def main():
     print(f"   {len(stations)} 站（含非北捷路線）")
 
     print("→ 抓取文化部藝文活動…")
-    events = fetch_json(CULTURE_API, "culture.json")
+    events = fetch_culture()
     print(f"   {len(events)} 筆活動")
 
     print("→ 正規化 + 捷運距離計算…")
